@@ -282,8 +282,45 @@ tcp_pkt_rx(struct packet * pkt)
                     ipv4_addr_to_str(src_ip), src_port);
 
         put_and_unlock_tcp_con(new_con);
+
+    } else if(tcp_hdr->flags.ACK) {
+        log_debug("Received ACK from %s:%d to %s:%d\n",
+                    ipv4_addr_to_str(src_ip), src_port,
+                    ipv4_addr_to_str(dst_ip), dst_port);
+        struct tcp_connection * con = get_and_lock_tcp_con_from_ipv4(
+            con_map,
+            dst_ip,    // local_ip
+            src_ip,    // remote_ip
+            dst_port,  // local_port
+            src_port   // remote_port
+        );
+        if (!con) {
+            log_error("Could not find TCP connection for %s:%d\n",
+                      ipv4_addr_to_str(src_ip), src_port);
+            goto cleanup;
+        }
+        if (con->con_state != SYN_RCVD) {
+            log_error("Connection is not in SYN_RCVD state\n");
+            put_and_unlock_tcp_con(con);
+            goto cleanup;
+        }
+
+        uint32_t client_ack = ntohl(tcp_hdr->ack_num);
+        if (client_ack == con->server_seq + 1) {
+            log_debug("Received valid ACK from %s:%d to %s:%d\n",
+                        ipv4_addr_to_str(src_ip), src_port,
+                        ipv4_addr_to_str(dst_ip), dst_port);
+            con->con_state = ESTABLISHED;
+            put_and_unlock_tcp_con(con);
+        } else {
+            log_error("Invalid ACK number from %s:%d to %s:%d\n",
+                      ipv4_addr_to_str(src_ip), src_port,
+                      ipv4_addr_to_str(dst_ip), dst_port);
+            put_and_unlock_tcp_con(con);
+            goto cleanup;
+        }
     }
-    
+
     return 0;
 
 cleanup:
@@ -320,6 +357,7 @@ static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt)
     // seq_num = my_first_seq
     uint32_t server_seq = 1000; // Better to use a random number later
     tcp_hdr->seq_num = htonl(server_seq);
+    con->server_seq = server_seq;
     // ack_num = their_seq + 1
     uint32_t client_seq = ntohl(((struct tcp_raw_hdr *)recv_pkt->layer_4_hdr)->seq_num);
     tcp_hdr->ack_num = htonl(client_seq + 1);

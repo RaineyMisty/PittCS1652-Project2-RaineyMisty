@@ -70,6 +70,8 @@ struct tcp_connection {
 
     tcp_con_state_t con_state;
 
+    uint32_t server_seq;
+
 
 };
 
