@@ -10,13 +10,13 @@
 !Makefile
 !.clang-format
 !.gitignore
+!README.md
+!README
+!LICENSE
 
 *.o
 *.out
 *.elf
-
-petnet
-libpetnet
 
 libpetnet.a
 

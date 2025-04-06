@@ -149,10 +149,41 @@ tcp_listen(struct socket    * sock,
            uint16_t           local_port)
 {
     struct tcp_state      * tcp_state = petnet_state->tcp_state;
+    if (!tcp_state || !tcp_state->con_map) {
+        log_error("tcp_listen: tcp_state or connection map is NULL\n");
+        return -1;
+    }
 
-    (void)tcp_state; // delete me
+    // Use 0.0.0.0 instead of NULL for remote_addr
+    uint8_t zero[4] = {0, 0, 0, 0};
+    struct ipv4_addr * dummy_remote = ipv4_addr_from_octets(zero);
 
-    return -1;
+    struct tcp_connection * con = create_ipv4_tcp_con(
+        tcp_state->con_map,
+        local_addr,
+        dummy_remote,
+        local_port,
+        0
+    );
+
+    free_ipv4_addr(dummy_remote);
+
+    if (!con) {
+        log_error("Could not create TCP connection\n");
+        return -1;
+    }
+
+    con->con_state = LISTEN;
+
+    if (add_sock_to_tcp_con(tcp_state->con_map, con, sock) == -1) {
+        log_error("Could not add socket to TCP connection\n");
+        put_and_unlock_tcp_con(con);
+        return -1;
+    }
+
+    put_and_unlock_tcp_con(con);
+    log_debug("tcp_listen: Listening on %s:%d\n", ipv4_addr_to_str(local_addr), local_port);
+    return 0;
 }
 
 int 
@@ -200,8 +231,14 @@ tcp_close(struct socket * sock)
 
 int 
 tcp_pkt_rx(struct packet * pkt)
-{
+{        
+    struct tcp_raw_hdr  * tcp_hdr  = NULL;
+    tcp_hdr = __get_tcp_hdr(pkt);
+    print_tcp_header(tcp_hdr);
+    
     if (pkt->layer_3_type == IPV4_PKT) {
+        // struct ipv4_raw_hdr * ipv4_hdr = (struct ipv4_raw_hdr *)pkt->layer_3_hdr;
+
    
         // Handle IPV4 Packet
 
