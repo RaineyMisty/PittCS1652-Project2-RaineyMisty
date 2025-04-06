@@ -232,19 +232,104 @@ tcp_close(struct socket * sock)
 int 
 tcp_pkt_rx(struct packet * pkt)
 {        
-    struct tcp_raw_hdr  * tcp_hdr  = NULL;
-    tcp_hdr = __get_tcp_hdr(pkt);
-    print_tcp_header(tcp_hdr);
-    
     if (pkt->layer_3_type == IPV4_PKT) {
-        // struct ipv4_raw_hdr * ipv4_hdr = (struct ipv4_raw_hdr *)pkt->layer_3_hdr;
+        struct ipv4_raw_hdr * ipv4_hdr = (struct ipv4_raw_hdr *)pkt->layer_3_hdr;
+        struct tcp_raw_hdr  * tcp_hdr  = __get_tcp_hdr(pkt);
 
+        struct ipv4_addr    * src_ip   = ipv4_addr_from_octets(ipv4_hdr->src_ip);
+        struct ipv4_addr    * dst_ip   = ipv4_addr_from_octets(ipv4_hdr->dst_ip);
+
+        uint16_t src_port = ntohs(tcp_hdr->src_port);
+        uint16_t dst_port = ntohs(tcp_hdr->dst_port);
+
+        struct tcp_state    * tcp_state = petnet_state->tcp_state;
+        struct tcp_con_map  * con_map   = tcp_state->con_map;
+
+        print_tcp_header(tcp_hdr);
    
         // Handle IPV4 Packet
+        if (tcp_hdr->flags.SYN && !tcp_hdr->flags.ACK) {
+            log_debug("Received SYN from %s:%d to %s:%d\n",
+                      ipv4_addr_to_str(src_ip), src_port,
+                      ipv4_addr_to_str(dst_ip), dst_port);
+            struct tcp_connection * new_con = get_listen_conncection(
+                con_map,
+                dst_ip,    // local_ip
+                dst_port,  // local_port
+                src_ip,    // remote_ip
+                src_port   // remote_port
+            );
+            
+            if (!new_con) {
+                goto cleanup;
+            }
+
+            // Send SYN-ACK
+            __send_syn_ack(new_con, pkt);
+            log_debug("Sent SYN-ACK to %s:%d\n",
+                      ipv4_addr_to_str(src_ip), src_port);
+
+            put_and_unlock_tcp_con(new_con);
+        }
 
     }
 
     return -1;
+}
+
+struct tcp_connection *
+get_listen_conncection(struct tcp_con_map * map,
+                            struct ipv4_addr   * local_ip, 
+                            uint16_t             local_port,
+                            struct ipv4_addr   * remote_ip,
+                            uint16_t             remote_port)
+{
+    struct ipv4_addr * dummy_remote = ipv4_addr_from_octets((uint8_t[4]){0, 0, 0, 0});
+    if (!dummy_remote) {
+        log_error("Could not create dummy remote address\n");
+        return NULL;
+    }
+
+    struct tcp_connection * listen_con = get_and_lock_tcp_con_from_ipv4(
+        map,
+        local_ip,
+        dummy_remote,
+        local_port,
+        0
+    );
+    free_ipv4_addr(dummy_remote);
+
+    if (!listen_con) {
+        log_error("Could not find listening connection for %s:%d\n",
+                  ipv4_addr_to_str(local_ip), local_port);
+        return NULL;
+    }
+
+    if (listen_con->con_state != LISTEN) {
+        log_error("Connection is not in LISTEN state\n");
+        put_and_unlock_tcp_con(listen_con);
+        return NULL;
+    }
+
+    struct tcp_connection * new_con = create_ipv4_tcp_con(
+        map,
+        local_ip,
+        remote_ip,
+        local_port,
+        remote_port
+    );
+
+    if (!new_con) {
+        log_error("Could not create new TCP connection\n");
+        put_and_unlock_tcp_con(listen_con);
+        return NULL;
+    }
+
+    new_con->con_state = SYN_RCVD;
+    
+    put_and_unlock_tcp_con(listen_con);
+
+    return new_con;
 }
 
 int 
