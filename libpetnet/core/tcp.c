@@ -265,7 +265,10 @@ tcp_pkt_rx(struct packet * pkt)
             }
 
             // Send SYN-ACK
-            __send_syn_ack(new_con, pkt);
+            if (__send_syn_ack(new_con, pkt) == -1) {
+                log_error("Failed to send SYN-ACK packet\n");
+                goto cleanup;
+            }
             log_debug("Sent SYN-ACK to %s:%d\n",
                       ipv4_addr_to_str(src_ip), src_port);
 
@@ -275,6 +278,70 @@ tcp_pkt_rx(struct packet * pkt)
     }
 
     return -1;
+
+cleanup:
+    if (src_ip) free_ipv4_addr(src_ip);
+    if (dst_ip) free_ipv4_addr(dst_ip);
+    if (pkt) free_packet(pkt);
+    return 0;
+}
+
+static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt) {
+    // Create a empty packet
+    struct packet * pkt = create_empty_packet();
+    if (!pkt) {
+        log_error("Could not create packet\n");
+        return -1;
+    }
+
+    // Create TCP header
+    // layer 2 and layer 3 will be autoset in the func ipv4_pkt_tx
+    pkt->layer_3_type = IPV4_PKT;
+
+    // Header of layer 4
+    struct tcp_raw_hdr * tcp_hdr = __make_tcp_hdr(pkt, 0);
+    if (!tcp_hdr) {
+        log_error("Could not create TCP header\n");
+        free_packet(pkt);
+        return -1;
+    }
+
+    // src_port = my_port
+    tcp_hdr->src_port = htons(con->ipv4_tuple.local_port);
+    // dst_port = their_port
+    tcp_hdr->dst_port = ((struct tcp_raw_hdr *)recv_pkt->layer_4_hdr)->src_port;
+    // seq_num = my_first_seq
+    uint32_t server_seq = 1000; // Better to use a random number later
+    tcp_hdr->seq_num = htonl(server_seq);
+    // ack_num = their_seq + 1
+    uint32_t client_seq = ntohl(((struct tcp_raw_hdr *)recv_pkt->layer_4_hdr)->seq_num);
+    tcp_hdr->ack_num = htonl(client_seq + 1);
+
+    // header_len = 20
+    tcp_hdr->header_len = 5; // 5 * 4 = 20 bytes
+
+    // flags
+    tcp_hdr->flags.SYN = 1;
+    tcp_hdr->flags.ACK = 1;
+    tcp_hdr->flags.PSH = 0;
+    tcp_hdr->flags.RST = 0;
+    tcp_hdr->flags.URG = 0;
+    tcp_hdr->flags.FIN = 0;
+
+    // recv_win
+    tcp_hdr->recv_win = htons(64240); // 0xF8B0 64240 bytes left
+
+    // checksum
+    tcp_hdr->checksum = 0; // TODO: calculate checksum
+
+    int ret = ipv4_pkt_tx(pkt, con->ipv4_tuple.remote_ip);
+    if (ret == -1) {
+        log_error("Failed to send SYN-ACK packet\n");
+        free_packet(pkt);
+        return -1;
+    }
+
+    return ret;
 }
 
 struct tcp_connection *
