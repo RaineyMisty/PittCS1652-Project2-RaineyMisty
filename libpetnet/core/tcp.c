@@ -299,26 +299,36 @@ tcp_pkt_rx(struct packet * pkt)
                       ipv4_addr_to_str(src_ip), src_port);
             goto cleanup;
         }
-        if (con->con_state != SYN_RCVD) {
-            log_error("Connection is not in SYN_RCVD state\n");
-            put_and_unlock_tcp_con(con);
-            goto cleanup;
-        }
-
-        uint32_t client_ack = ntohl(tcp_hdr->ack_num);
-        if (client_ack == con->server_seq + 1) {
-            log_debug("Received valid ACK from %s:%d to %s:%d\n",
-                        ipv4_addr_to_str(src_ip), src_port,
-                        ipv4_addr_to_str(dst_ip), dst_port);
-            con->con_state = ESTABLISHED;
+        ////////// Establish connection will error
+        // if (con->con_state != SYN_RCVD) {
+        //     log_error("Connection is not in SYN_RCVD state\n");
+        //     put_and_unlock_tcp_con(con);
+        //     goto cleanup;
+        // }
+        if (con->con_state == SYN_RCVD) {
+            uint32_t client_ack = ntohl(tcp_hdr->ack_num);
+            if (client_ack == con->server_seq + 1) {
+                log_debug("Received valid ACK from %s:%d to %s:%d\n",
+                            ipv4_addr_to_str(src_ip), src_port,
+                            ipv4_addr_to_str(dst_ip), dst_port);
+                con->con_state = ESTABLISHED;
+                put_and_unlock_tcp_con(con);
+            } else {
+                log_error("Invalid ACK number from %s:%d to %s:%d\n",
+                          ipv4_addr_to_str(src_ip), src_port,
+                          ipv4_addr_to_str(dst_ip), dst_port);
+                put_and_unlock_tcp_con(con);
+                goto cleanup;
+            }
+        } else if (con->con_state == ESTABLISHED) {
+            log_debug("Received duplicate ACK (connection already ESTABLISHED)\n");
             put_and_unlock_tcp_con(con);
         } else {
-            log_error("Invalid ACK number from %s:%d to %s:%d\n",
-                      ipv4_addr_to_str(src_ip), src_port,
-                      ipv4_addr_to_str(dst_ip), dst_port);
+            log_error("Connection is not in SYN_RCVD or ESTABLISHED state\n");
             put_and_unlock_tcp_con(con);
             goto cleanup;
         }
+        
     }
 
     return 0;
@@ -326,7 +336,6 @@ tcp_pkt_rx(struct packet * pkt)
 cleanup:
     if (src_ip) free_ipv4_addr(src_ip);
     if (dst_ip) free_ipv4_addr(dst_ip);
-    if (pkt) free_packet(pkt);
     return 0;
 }
 
