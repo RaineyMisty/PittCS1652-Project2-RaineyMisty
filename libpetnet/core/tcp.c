@@ -330,6 +330,36 @@ cleanup:
     return 0;
 }
 
+static uint16_t
+__calculate_tcp_checksum(struct ipv4_addr * src_ip,
+                         struct ipv4_addr * dst_ip,
+                         struct packet    * pkt)
+{
+    struct ipv4_pseudo_hdr hdr;
+    uint16_t checksum = 0;
+
+    memset(&hdr, 0, sizeof(struct ipv4_pseudo_hdr));
+
+    ipv4_addr_to_octets(src_ip, hdr.src_ip);
+    ipv4_addr_to_octets(dst_ip, hdr.dst_ip);
+
+    hdr.proto = IPV4_PROTO_TCP;
+    hdr.length = htons(pkt->layer_4_hdr_len + pkt->payload_len);
+
+    checksum = calculate_checksum_begin(&hdr, sizeof(struct ipv4_pseudo_hdr) / 2);
+    checksum = calculate_checksum_continue(checksum, pkt->layer_4_hdr, pkt->layer_4_hdr_len / 2);
+    checksum = calculate_checksum_continue(checksum, pkt->payload,     pkt->payload_len     / 2);
+
+    if ((pkt->payload_len % 2) != 0) {
+        uint16_t tmp = *(uint8_t *)(pkt->payload + pkt->payload_len - 1);
+        checksum = calculate_checksum_finalize(checksum, &tmp, 1);
+    } else {
+        checksum = calculate_checksum_finalize(checksum, NULL, 0);
+    }
+    return checksum;
+}
+                         
+
 static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt) {
     // Create a empty packet
     struct packet * pkt = create_empty_packet();
@@ -377,7 +407,14 @@ static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt)
     tcp_hdr->recv_win = htons(64240); // 0xF8B0 64240 bytes left
 
     // checksum
-    tcp_hdr->checksum = 0; // TODO: calculate checksum
+    // tcp_hdr->checksum = 0; // TODO: calculate checksum
+    pkt->payload_len = 0; // No payload
+    pkt->payload     = NULL;
+    tcp_hdr->checksum = __calculate_tcp_checksum(
+        con->ipv4_tuple.local_ip,
+        con->ipv4_tuple.remote_ip,
+        pkt
+    );
 
     int ret = ipv4_pkt_tx(pkt, con->ipv4_tuple.remote_ip);
     if (ret == -1) {
