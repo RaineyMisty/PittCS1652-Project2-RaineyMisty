@@ -15,6 +15,7 @@
 #include <petlib/pet_log.h>
 #include <petlib/pet_hashtable.h>
 #include <petlib/pet_json.h>
+#include <petlib/pet_ringbuffer.h>
 
 #include <util/ip_address.h>
 #include <util/inet.h>
@@ -26,6 +27,84 @@
 #include "tcp_connection.h"
 #include "packet.h"
 #include "socket.h"
+
+struct pet_ringbuf;
+
+
+struct socket {
+    int fd;
+
+    pet_sock_type_t   type;
+    pet_sock_family_t family;
+
+    struct {
+
+        uint64_t connecting    : 1;
+        uint64_t listening     : 1;
+
+
+        uint64_t connected     : 1;
+        uint64_t closed        : 1;
+
+        uint64_t error         : 1;
+
+    } __attribute__((packed));
+
+    int sock_errno;
+
+    struct pet_ringbuf * recv_buf;
+    struct pet_ringbuf * send_buf;
+
+    uint16_t local_port;
+    uint16_t remote_port;
+
+    union {
+        struct ipv4_addr * local_addr_v4;
+    };
+
+    union {
+        struct ipv4_addr * remote_addr_v4;
+    };
+
+    int              backlog;
+    int              num_pending;
+    struct list_head pending_list;
+
+
+    pthread_mutex_t lock;
+    pthread_cond_t  cond_var;
+
+    int ref_cnt;
+    struct list_head list_node;
+
+};
+
+// struct pet_ringbuf {
+//     uint8_t * buf;
+//     uint8_t * head;
+//     uint8_t * tail;
+//     size_t    size;
+// };
+
+// static struct pet_ringbuf *
+// pet_create_ringbuf(uint32_t size)
+// {
+//     struct pet_ringbuf * rb = pet_malloc(sizeof(struct pet_ringbuf));
+//     if (!rb) return NULL;
+
+//     rb->data = pet_malloc(size);
+//     if (!rb->data) {
+//         pet_free(rb);
+//         return NULL;
+//     }
+
+//     rb->size  = size;
+//     rb->start = 0;
+//     rb->end   = 0;
+
+//     return rb;
+// }
+
 
 
 extern int petnet_errno;
@@ -185,8 +264,9 @@ tcp_listen(struct socket    * sock,
 
     con->con_state = LISTEN;
 
+//dark
     // if (sock->recv_buf == NULL) {
-    //     sock->recv_buf = pet_ringbuf_create(4096);
+    //     sock->recv_buf = pet_create_ringbuf(4096);
     // }
 
     // if (sock && sock->state && sock->state->recv_buf == NULL) {
@@ -394,8 +474,17 @@ tcp_pkt_rx(struct packet * pkt)
             // if (con->sock) {
             //     pet_socket_received_data(con->sock, NULL, 0);  // trigger recv_buf allocation
             // }
+        
+            // if (con->sock && con->sock->recv_buf == NULL) {
+            //     con->sock->recv_buf = pet_create_ringbuf(4096); // or some reasonable default size
+            //     if (!con->sock->recv_buf) {
+            //         log_error("Failed to allocate recv_buf");
+            //         put_and_unlock_tcp_con(con);
+            //         goto cleanup;
+            //     }
+            // }
 
-            int ret = pet_socket_received_data(con->sock, payload, len);
+            int ret = pet_socket_recv_from(con->sock->fd, payload, len, NULL, 0);
             log_debug("Result of pet_socket_received_data ret: %d", ret);
             if (ret == -1) {
                 log_error("Failed to receive data from socket\n");
