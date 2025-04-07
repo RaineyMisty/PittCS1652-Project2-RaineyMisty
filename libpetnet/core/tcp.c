@@ -120,6 +120,7 @@ struct tcp_state {
 
 static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt);
 static int __send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t payload_len);
+static int __send_fin_ack(struct tcp_connection * con, uint32_t recv_seq);
 static struct tcp_connection * get_listen_connection(struct tcp_con_map * map,
                                                       struct ipv4_addr   * local_ip,
                                                       uint16_t             local_port,
@@ -379,6 +380,34 @@ tcp_pkt_rx(struct packet * pkt)
         log_debug("Received SYN from %s:%d to %s:%d\n",
                     ipv4_addr_to_str(src_ip), src_port,
                     ipv4_addr_to_str(dst_ip), dst_port);
+
+        // Check if we have a listening connection
+        // 🔥 检测是否已有连接（防止重复创建）
+        struct tcp_connection * con = get_and_lock_tcp_con_from_ipv4(
+            con_map,
+            dst_ip,    // local_ip
+            src_ip,    // remote_ip
+            dst_port,  // local_port
+            src_port   // remote_port
+        );
+
+        if (con) {
+            if (con->con_state == SYN_RCVD) {
+                log_debug("Duplicate SYN received, resend SYN-ACK\n");
+                __send_syn_ack(con, pkt);
+                put_and_unlock_tcp_con(con);  // 不要忘记解锁！
+                goto cleanup;  // 不再创建新连接
+            } else {
+                // 状态不是 SYN_RCVD，可以选择忽略或报错
+                put_and_unlock_tcp_con(con);
+            }
+        }
+        // Use tcpdump to check the packet
+        // and find out I send two SYN packets
+        // If I don't put this, the server will send two SYN-ACK packets
+        // and I will receive two SYN-ACK packets
+        // It is sooo hard to find out the bug 🥹🥹🥹 
+
         struct tcp_connection * new_con = get_listen_connection(
             con_map,
             dst_ip,    // local_ip
@@ -405,6 +434,48 @@ tcp_pkt_rx(struct packet * pkt)
         put_and_unlock_tcp_con(new_con);
 
     } else if(tcp_hdr->flags.ACK) {
+
+        // Fin
+        if (tcp_hdr->flags.FIN) {
+            log_debug("Received FIN from %s:%d to %s:%d\n",
+                        ipv4_addr_to_str(src_ip), src_port,
+                        ipv4_addr_to_str(dst_ip), dst_port);
+            struct tcp_connection * con = get_and_lock_tcp_con_from_ipv4(
+                con_map,
+                dst_ip,    // local_ip
+                src_ip,    // remote_ip
+                dst_port,  // local_port
+                src_port   // remote_port
+            );
+            if (!con) {
+                log_error("Could not find TCP connection for %s:%d\n",
+                        ipv4_addr_to_str(src_ip), src_port);
+                goto cleanup;
+            }
+            con->con_state = CLOSE_WAIT;
+
+            ////////////////////////////////////////////////////////////////////
+            // Here we dont need to send FIN-ACK,because we are receiving a FIN
+            // from the client, we just need to send an ACK
+            // if (__send_fin_ack(con, ntohl(tcp_hdr->seq_num)) == -1) {
+            //     log_error("Failed to send FIN-ACK packet\n");
+            //     put_and_unlock_tcp_con(con);
+            //     goto cleanup;
+            // }
+            // log_debug("Sent FIN-ACK to %s:%d\n",
+            //             ipv4_addr_to_str(src_ip), src_port);
+            ///////////////////////////////////////////////////////////////////
+            // Send ACK
+            if (__send_ack(con, ntohl(tcp_hdr->seq_num), 0) == -1) {
+                log_error("Failed to send ACK packet in received FIN part\n");
+                put_and_unlock_tcp_con(con);
+                goto cleanup;
+            }
+            log_debug("Sent ACK in replying FIN to %s:%d\n",
+                        ipv4_addr_to_str(src_ip), src_port);
+                
+            put_and_unlock_tcp_con(con);
+        }
 
         if (pkt->payload_len == 0 && !tcp_hdr->flags.PSH) {
             
@@ -447,6 +518,9 @@ tcp_pkt_rx(struct packet * pkt)
                 }
             } else if (con->con_state == ESTABLISHED) {
                 log_debug("Received duplicate ACK (connection already ESTABLISHED)\n");
+                put_and_unlock_tcp_con(con);
+            } else if (con->con_state == CLOSE_WAIT) {
+                log_debug("Received ACK in CLOSE_WAIT state\n");
                 put_and_unlock_tcp_con(con);
             } else {
                 log_error("Connection is not in SYN_RCVD or ESTABLISHED state\n");
@@ -573,6 +647,62 @@ __calculate_tcp_checksum(struct ipv4_addr * src_ip,
         checksum = calculate_checksum_finalize(checksum, NULL, 0);
     }
     return checksum;
+}
+
+static int __send_fin_ack(struct tcp_connection  * con, uint32_t recv_seq) {
+    // Send FIN
+    // Create a empty packet
+    struct packet * fin_pkt = create_empty_packet();
+    if (!fin_pkt) {
+        log_error("Could not create packet\n");
+        return -1;
+    }
+    fin_pkt->layer_3_type = IPV4_PKT;
+    // Create TCP header
+    struct tcp_raw_hdr * tcp_hdr = __make_tcp_hdr(fin_pkt, 0);
+    if (!tcp_hdr) {
+        log_error("Could not create TCP header for sending FIN-ACK\n");
+        free_packet(fin_pkt);
+        return -1;
+    }
+    // src_port = my_port
+    tcp_hdr->src_port = htons(con->ipv4_tuple.local_port);
+    // dst_port = their_port
+    tcp_hdr->dst_port = htons(con->ipv4_tuple.remote_port);
+    // seq_num = current_seq
+    tcp_hdr->seq_num = htonl(con->snd_nxt);
+    con->snd_nxt++;
+    // ack_num = their_seq + 1
+    tcp_hdr->ack_num = htonl(recv_seq + 1);
+
+    // header_len = tcp_raw_hdr_len / 4
+    tcp_hdr->header_len = (sizeof(struct tcp_raw_hdr) / 4);
+    // flags
+    tcp_hdr->flags.SYN = 0;
+    tcp_hdr->flags.ACK = 1;
+    tcp_hdr->flags.PSH = 0;
+    tcp_hdr->flags.RST = 0;
+    tcp_hdr->flags.URG = 0;
+    tcp_hdr->flags.FIN = 1;
+
+    // recv_win
+    tcp_hdr->recv_win = htons(64240); // 0xF8B0 64240 bytes left
+    // checksum
+    tcp_hdr->checksum = __calculate_tcp_checksum(
+        con->ipv4_tuple.local_ip,
+        con->ipv4_tuple.remote_ip,
+        fin_pkt
+    );
+    int ret = ipv4_pkt_tx(fin_pkt, con->ipv4_tuple.remote_ip);
+    if (ret == -1) {
+        log_error("Failed to send FIN-ACK packet\n");
+        free_packet(fin_pkt);
+        return -1;
+    }
+    log_debug("Sent FIN-ACK packet to %s:%d\n",
+                ipv4_addr_to_str(con->ipv4_tuple.remote_ip), con->ipv4_tuple.remote_port);
+    
+    return ret;
 }
 
 static int __send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t payload_len) {
