@@ -638,7 +638,7 @@ static int __send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t p
     log_debug("Sent Data Received ACK packet to %s:%d\n",
                 ipv4_addr_to_str(con->ipv4_tuple.remote_ip), con->ipv4_tuple.remote_port);
     
-    free_packet(ack_pkt);
+    // free_packet(ack_pkt);
     return ret;
 }                         
 
@@ -706,7 +706,9 @@ static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt)
         return -1;
     }
 
-    free_packet(pkt);
+    // make an error
+    // free_packet(pkt);
+    // ipv4_pkt_tx will free the packet
 
     return ret;
 }
