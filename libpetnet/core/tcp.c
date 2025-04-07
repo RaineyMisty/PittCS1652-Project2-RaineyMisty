@@ -155,6 +155,9 @@ tcp_listen(struct socket    * sock,
            struct ipv4_addr * local_addr,
            uint16_t           local_port)
 {
+
+    log_debug("tcp_listen: sock = %p", sock);
+
     struct tcp_state      * tcp_state = petnet_state->tcp_state;
     if (!tcp_state || !tcp_state->con_map) {
         log_error("tcp_listen: tcp_state or connection map is NULL\n");
@@ -181,6 +184,21 @@ tcp_listen(struct socket    * sock,
     }
 
     con->con_state = LISTEN;
+
+    // if (sock->recv_buf == NULL) {
+    //     sock->recv_buf = pet_ringbuf_create(4096);
+    // }
+
+    // if (sock && sock->state && sock->state->recv_buf == NULL) {
+    //     sock->state->recv_buf = pet_ringbuf_create(4096);
+    // }
+
+    if (!sock) {
+        log_error("Socket is NULL\n");
+        put_and_unlock_tcp_con(con);
+        return -1;
+    }
+
 
     if (add_sock_to_tcp_con(tcp_state->con_map, con, sock) == -1) {
         log_error("Could not add socket to TCP connection\n");
@@ -268,6 +286,7 @@ tcp_pkt_rx(struct packet * pkt)
             src_ip,    // remote_ip
             src_port   // remote_port
         );
+        log_debug("[test1] con = %p, con->sock = %p", new_con, new_con->sock);
         
         if (!new_con) {
             goto cleanup;
@@ -344,6 +363,9 @@ tcp_pkt_rx(struct packet * pkt)
                 dst_port,  // local_port
                 src_port   // remote_port
             );
+
+            log_debug("[test2] con = %p, con->sock = %p", con, con->sock);
+
             if (!con) {
                 log_error("Could not find TCP connection for %s:%d\n",
                         ipv4_addr_to_str(src_ip), src_port);
@@ -357,10 +379,24 @@ tcp_pkt_rx(struct packet * pkt)
 
             // get payload
             void * payload = __get_payload(pkt);
-            uint32_t payload_len = pkt->payload_len;
+            uint32_t len = pkt->payload_len;
 
-            int ret = pet_socket_received_data(con->sock, payload, payload_len);
+            log_debug("Payload pointer: %p, length: %d", payload, len);
+            log_debug("First few bytes: %02x %02x %02x %02x", 
+                    len > 0 ? ((uint8_t*)payload)[0] : 0,
+                    len > 1 ? ((uint8_t*)payload)[1] : 0,
+                    len > 2 ? ((uint8_t*)payload)[2] : 0,
+                    len > 3 ? ((uint8_t*)payload)[3] : 0);
+            //// this cannot be used
+            // log_debug("recv_buf = %p", con->sock->recv_buf);
 
+            // 🚨 添加这段 before 正式写入
+            // if (con->sock) {
+            //     pet_socket_received_data(con->sock, NULL, 0);  // trigger recv_buf allocation
+            // }
+
+            int ret = pet_socket_received_data(con->sock, payload, len);
+            log_debug("Result of pet_socket_received_data ret: %d", ret);
             if (ret == -1) {
                 log_error("Failed to receive data from socket\n");
                 put_and_unlock_tcp_con(con);
@@ -507,6 +543,8 @@ get_listen_connection(struct tcp_con_map * map,
         return NULL;
     }
 
+    log_debug("[get_listen_connection] listen_con = %p, listen_con->sock = %p", listen_con, listen_con ? listen_con->sock : NULL);
+
     if (listen_con->con_state != LISTEN) {
         log_error("Connection is not in LISTEN state\n");
         put_and_unlock_tcp_con(listen_con);
@@ -528,6 +566,14 @@ get_listen_connection(struct tcp_con_map * map,
     }
 
     new_con->con_state = SYN_RCVD;
+
+    // add socket to new connection, if not, socket will be NULL
+    if (add_sock_to_tcp_con(map, new_con, listen_con->sock) == -1) {
+        log_error("Could not add socket to new TCP connection\n");
+        put_and_unlock_tcp_con(new_con);
+        put_and_unlock_tcp_con(listen_con);
+        return NULL;
+    }
     
     put_and_unlock_tcp_con(listen_con);
 
