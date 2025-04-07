@@ -284,49 +284,93 @@ tcp_pkt_rx(struct packet * pkt)
         put_and_unlock_tcp_con(new_con);
 
     } else if(tcp_hdr->flags.ACK) {
-        log_debug("Received ACK from %s:%d to %s:%d\n",
-                    ipv4_addr_to_str(src_ip), src_port,
-                    ipv4_addr_to_str(dst_ip), dst_port);
-        struct tcp_connection * con = get_and_lock_tcp_con_from_ipv4(
-            con_map,
-            dst_ip,    // local_ip
-            src_ip,    // remote_ip
-            dst_port,  // local_port
-            src_port   // remote_port
-        );
-        if (!con) {
-            log_error("Could not find TCP connection for %s:%d\n",
-                      ipv4_addr_to_str(src_ip), src_port);
-            goto cleanup;
-        }
-        ////////// Establish connection will error
-        // if (con->con_state != SYN_RCVD) {
-        //     log_error("Connection is not in SYN_RCVD state\n");
-        //     put_and_unlock_tcp_con(con);
-        //     goto cleanup;
-        // }
-        if (con->con_state == SYN_RCVD) {
-            uint32_t client_ack = ntohl(tcp_hdr->ack_num);
-            if (client_ack == con->server_seq + 1) {
-                log_debug("Received valid ACK from %s:%d to %s:%d\n",
+
+        if (pkt->payload_len == 0 && !tcp_hdr->flags.PSH) {
+            
+            /////////// Pure ACK
+            log_debug("Received ACK from %s:%d to %s:%d\n",
+                        ipv4_addr_to_str(src_ip), src_port,
+                        ipv4_addr_to_str(dst_ip), dst_port);
+            struct tcp_connection * con = get_and_lock_tcp_con_from_ipv4(
+                con_map,
+                dst_ip,    // local_ip
+                src_ip,    // remote_ip
+                dst_port,  // local_port
+                src_port   // remote_port
+            );
+            if (!con) {
+                log_error("Could not find TCP connection for %s:%d\n",
+                        ipv4_addr_to_str(src_ip), src_port);
+                goto cleanup;
+            }
+            ////////// Establish connection will error
+            // if (con->con_state != SYN_RCVD) {
+            //     log_error("Connection is not in SYN_RCVD state\n");
+            //     put_and_unlock_tcp_con(con);
+            //     goto cleanup;
+            // }
+            if (con->con_state == SYN_RCVD) {
+                uint32_t client_ack = ntohl(tcp_hdr->ack_num);
+                if (client_ack == con->server_seq + 1) {
+                    log_debug("Received valid ACK from %s:%d to %s:%d\n",
+                                ipv4_addr_to_str(src_ip), src_port,
+                                ipv4_addr_to_str(dst_ip), dst_port);
+                    con->con_state = ESTABLISHED;
+                    put_and_unlock_tcp_con(con);
+                } else {
+                    log_error("Invalid ACK number from %s:%d to %s:%d\n",
                             ipv4_addr_to_str(src_ip), src_port,
                             ipv4_addr_to_str(dst_ip), dst_port);
-                con->con_state = ESTABLISHED;
+                    put_and_unlock_tcp_con(con);
+                    goto cleanup;
+                }
+            } else if (con->con_state == ESTABLISHED) {
+                log_debug("Received duplicate ACK (connection already ESTABLISHED)\n");
                 put_and_unlock_tcp_con(con);
             } else {
-                log_error("Invalid ACK number from %s:%d to %s:%d\n",
-                          ipv4_addr_to_str(src_ip), src_port,
-                          ipv4_addr_to_str(dst_ip), dst_port);
+                log_error("Connection is not in SYN_RCVD or ESTABLISHED state\n");
                 put_and_unlock_tcp_con(con);
                 goto cleanup;
             }
-        } else if (con->con_state == ESTABLISHED) {
-            log_debug("Received duplicate ACK (connection already ESTABLISHED)\n");
-            put_and_unlock_tcp_con(con);
         } else {
-            log_error("Connection is not in SYN_RCVD or ESTABLISHED state\n");
+            ///////////// Data packet
+            log_debug("Received data packet from %s:%d to %s:%d\n",
+                        ipv4_addr_to_str(src_ip), src_port,
+                        ipv4_addr_to_str(dst_ip), dst_port);
+            struct tcp_connection * con = get_and_lock_tcp_con_from_ipv4(
+                con_map,
+                dst_ip,    // local_ip
+                src_ip,    // remote_ip
+                dst_port,  // local_port
+                src_port   // remote_port
+            );
+            if (!con) {
+                log_error("Could not find TCP connection for %s:%d\n",
+                        ipv4_addr_to_str(src_ip), src_port);
+                goto cleanup;
+            }
+            if (con->con_state != ESTABLISHED) {
+                log_error("Connection is not in ESTABLISHED state\n");
+                put_and_unlock_tcp_con(con);
+                goto cleanup;
+            }
+
+            // get payload
+            void * payload = __get_payload(pkt);
+            uint32_t payload_len = pkt->payload_len;
+
+            int ret = pet_socket_received_data(con->sock, payload, payload_len);
+
+            if (ret == -1) {
+                log_error("Failed to receive data from socket\n");
+                put_and_unlock_tcp_con(con);
+                goto cleanup;
+            } else {
+                log_debug("Received %d bytes from socket\n", ret);
+            }
+
             put_and_unlock_tcp_con(con);
-            goto cleanup;
+
         }
         
     }
