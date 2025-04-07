@@ -28,6 +28,8 @@
 #include "packet.h"
 #include "socket.h"
 
+
+/// @dark_magic
 struct pet_ringbuf;
 
 
@@ -104,6 +106,8 @@ struct socket {
 
 //     return rb;
 // }
+
+/// dark_magic
 
 
 
@@ -331,6 +335,21 @@ tcp_close(struct socket * sock)
 
 
 
+int pet_socket_data_received(struct socket * sock, uint8_t * data, size_t len) {
+    // 尝试将数据写入 recv_buf 环形缓冲区
+    int bytes_written = pet_ringbuf_write(sock->recv_buf, data, len);
+    if (bytes_written < 0 || (size_t)bytes_written != len) {
+        log_error("recv_buf ring overflow or write error: written=%d, expected=%zu", bytes_written, len);
+        return -1;
+    }
+    
+    // 写入成功后，通知等待数据到来的线程
+    pthread_mutex_lock(&sock->lock);
+    pthread_cond_signal(&sock->cond_var);
+    pthread_mutex_unlock(&sock->lock);
+    
+    return bytes_written;
+}
 
 
 
@@ -366,7 +385,9 @@ tcp_pkt_rx(struct packet * pkt)
             src_ip,    // remote_ip
             src_port   // remote_port
         );
-        log_debug("[test1] con = %p, con->sock = %p", new_con, new_con->sock);
+
+        /////////// thanks
+        // log_debug("[test1] con = %p, con->sock = %p", new_con, new_con->sock);
         
         if (!new_con) {
             goto cleanup;
@@ -444,7 +465,8 @@ tcp_pkt_rx(struct packet * pkt)
                 src_port   // remote_port
             );
 
-            log_debug("[test2] con = %p, con->sock = %p", con, con->sock);
+            ///////////// thanks
+            // log_debug("[test2] con = %p, con->sock = %p", con, con->sock);
 
             if (!con) {
                 log_error("Could not find TCP connection for %s:%d\n",
@@ -461,12 +483,15 @@ tcp_pkt_rx(struct packet * pkt)
             void * payload = __get_payload(pkt);
             uint32_t len = pkt->payload_len;
 
-            log_debug("Payload pointer: %p, length: %d", payload, len);
-            log_debug("First few bytes: %02x %02x %02x %02x", 
-                    len > 0 ? ((uint8_t*)payload)[0] : 0,
-                    len > 1 ? ((uint8_t*)payload)[1] : 0,
-                    len > 2 ? ((uint8_t*)payload)[2] : 0,
-                    len > 3 ? ((uint8_t*)payload)[3] : 0);
+            ////////////// Good note It helps a lot in debugging Data package!
+            // log_debug("Payload pointer: %p, length: %d", payload, len);
+            // log_debug("First few bytes: %02x %02x %02x %02x", 
+            //         len > 0 ? ((uint8_t*)payload)[0] : 0,
+            //         len > 1 ? ((uint8_t*)payload)[1] : 0,
+            //         len > 2 ? ((uint8_t*)payload)[2] : 0,
+            //         len > 3 ? ((uint8_t*)payload)[3] : 0);
+            /////////////////////////////////////////////////
+
             //// this cannot be used
             // log_debug("recv_buf = %p", con->sock->recv_buf);
 
@@ -484,14 +509,17 @@ tcp_pkt_rx(struct packet * pkt)
             //     }
             // }
 
-            int ret = pet_socket_recv_from(con->sock->fd, payload, len, NULL, 0);
-            log_debug("Result of pet_socket_received_data ret: %d", ret);
+            int ret = pet_socket_data_received(con->sock, payload, len);
+            
+            ///////////// thanks
+            // log_debug("Result of pet_socket_received_data ret: %d", ret);
             if (ret == -1) {
                 log_error("Failed to receive data from socket\n");
                 put_and_unlock_tcp_con(con);
                 goto cleanup;
             } else {
                 log_debug("Received %d bytes from socket\n", ret);
+                log_debug("The data is: %s\n", (char *)payload);
             }
 
             put_and_unlock_tcp_con(con);
