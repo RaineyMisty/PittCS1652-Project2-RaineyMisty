@@ -120,7 +120,7 @@ struct tcp_state {
 
 static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt);
 static int __send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t payload_len);
-static int __send_fin_ack(struct tcp_connection * con, uint32_t recv_seq);
+static int __send_fin(struct tcp_connection * con, uint32_t recv_seq);
 static struct tcp_connection * get_listen_connection(struct tcp_con_map * map,
                                                       struct ipv4_addr   * local_ip,
                                                       uint16_t             local_port,
@@ -354,7 +354,23 @@ int pet_socket_data_received(struct socket * sock, uint8_t * data, size_t len) {
 }
 
 
-
+/**
+ * This function is called when a TCP packet is received
+ * It will check the TCP header and handle the packet
+ * 
+ * The main task of this function is
+ * 1. Check the TCP header
+ *   a. Get TCP ip and port
+ *   b. Get TCP seq_num, ack_num, header_len
+ *   c. Get TCP flags: SYN, ACK, PSH, FIN
+ * 2. Handle the TCP packet depending on the flags
+ *   a. If SYN and not ACK, send SYN-ACK
+ *   b. If ACK, check if the connection is established
+ *   c. If PSH, send data to the socket
+ *   d. If FIN, send FIN
+ * @param pkt The packet received
+ * @return 0 on success, -1 on error
+ */
 int 
 tcp_pkt_rx(struct packet * pkt)
 {        
@@ -424,6 +440,7 @@ tcp_pkt_rx(struct packet * pkt)
         }
 
         // Send SYN-ACK
+        con->rcv_nxt = ntohl(tcp_hdr->seq_num) + 1;
         if (__send_syn_ack(new_con, pkt) == -1) {
             log_error("Failed to send SYN-ACK packet\n");
             goto cleanup;
@@ -452,7 +469,6 @@ tcp_pkt_rx(struct packet * pkt)
                         ipv4_addr_to_str(src_ip), src_port);
                 goto cleanup;
             }
-            con->con_state = CLOSE_WAIT;
 
             ////////////////////////////////////////////////////////////////////
             // Here we dont need to send FIN-ACK,because we are receiving a FIN
@@ -466,12 +482,24 @@ tcp_pkt_rx(struct packet * pkt)
             //             ipv4_addr_to_str(src_ip), src_port);
             ///////////////////////////////////////////////////////////////////
             // Send ACK
+            con->snd_nxt = ntohl(tcp_hdr->seq_num) + 1; 
             if (__send_ack(con, ntohl(tcp_hdr->seq_num), 0) == -1) {
                 log_error("Failed to send ACK packet in received FIN part\n");
                 put_and_unlock_tcp_con(con);
                 goto cleanup;
             }
-            log_debug("Sent ACK in replying FIN to %s:%d\n",
+            con->con_state = CLOSE_WAIT;
+            log_debug("Sent ACK in receiving FIN to %s:%d\n",
+                        ipv4_addr_to_str(src_ip), src_port);
+            
+            // Send FIN
+            if (__send_fin(con, ntohl(tcp_hdr->seq_num)) == -1) {
+                log_error("Failed to send FIN packet\n");
+                put_and_unlock_tcp_con(con);
+                goto cleanup;
+            }
+            con->con_state = LAST_ACK;
+            log_debug("Sent FIN to %s:%d\n",
                         ipv4_addr_to_str(src_ip), src_port);
                 
             put_and_unlock_tcp_con(con);
@@ -521,6 +549,11 @@ tcp_pkt_rx(struct packet * pkt)
                 put_and_unlock_tcp_con(con);
             } else if (con->con_state == CLOSE_WAIT) {
                 log_debug("Received ACK in CLOSE_WAIT state\n");
+                put_and_unlock_tcp_con(con);
+            } else if (con->con_state == LAST_ACK) {
+                log_debug("Received ACK in LAST_ACK state\n");
+                con->con_state = CLOSED;
+                remove_tcp_con(con_map, con);
                 put_and_unlock_tcp_con(con);
             } else {
                 log_error("Connection is not in SYN_RCVD or ESTABLISHED state\n");
@@ -598,6 +631,7 @@ tcp_pkt_rx(struct packet * pkt)
             }
 
             // Send ACK
+            con->snd_nxt = ntohl(tcp_hdr->seq_num) + len;
             if (__send_ack(con, ntohl(tcp_hdr->seq_num), len) == -1) {
                 log_error("Failed to send ACK packet\n");
                 put_and_unlock_tcp_con(con);
@@ -649,7 +683,7 @@ __calculate_tcp_checksum(struct ipv4_addr * src_ip,
     return checksum;
 }
 
-static int __send_fin_ack(struct tcp_connection  * con, uint32_t recv_seq) {
+static int __send_fin(struct tcp_connection  * con, uint32_t recv_seq) {
     // Send FIN
     // Create a empty packet
     struct packet * fin_pkt = create_empty_packet();
@@ -673,13 +707,13 @@ static int __send_fin_ack(struct tcp_connection  * con, uint32_t recv_seq) {
     tcp_hdr->seq_num = htonl(con->snd_nxt);
     con->snd_nxt++;
     // ack_num = their_seq + 1
-    tcp_hdr->ack_num = htonl(recv_seq + 1);
+    tcp_hdr->ack_num = 0;
 
     // header_len = tcp_raw_hdr_len / 4
     tcp_hdr->header_len = (sizeof(struct tcp_raw_hdr) / 4);
     // flags
     tcp_hdr->flags.SYN = 0;
-    tcp_hdr->flags.ACK = 1;
+    tcp_hdr->flags.ACK = 0;
     tcp_hdr->flags.PSH = 0;
     tcp_hdr->flags.RST = 0;
     tcp_hdr->flags.URG = 0;
@@ -736,7 +770,7 @@ static int __send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t p
     // It is a pure ACK packet
     tcp_hdr->seq_num = htonl(con->snd_nxt);
     // ack_num = their_seq + len
-    tcp_hdr->ack_num = htonl(recv_seq + payload_len);
+    tcp_hdr->ack_num = htonl(con->rcv_nxt);
 
     // header_len = tcp_raw_hdr_len / 4
     tcp_hdr->header_len = (sizeof(struct tcp_raw_hdr) / 4);
@@ -795,15 +829,18 @@ static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt)
     // src_port = my_port
     tcp_hdr->src_port = htons(con->ipv4_tuple.local_port);
     // dst_port = their_port
-    tcp_hdr->dst_port = ((struct tcp_raw_hdr *)recv_pkt->layer_4_hdr)->src_port;
+    // tcp_hdr->dst_port = ((struct tcp_raw_hdr *)recv_pkt->layer_4_hdr)->src_port;
+    // in the get_listen_connection, we have already set the local port
+    // so we can use the local port here
+    // there is no need to set the dst_port again 🥹
+    tcp_hdr->dst_port = htons(con->ipv4_tuple.remote_port);
     // seq_num = my_first_seq
     uint32_t server_seq = 1000; // Better to use a random number later
     tcp_hdr->seq_num = htonl(server_seq);
     con->server_seq = server_seq;
     con->snd_nxt = server_seq + 1;
     // ack_num = their_seq + 1
-    uint32_t client_seq = ntohl(((struct tcp_raw_hdr *)recv_pkt->layer_4_hdr)->seq_num);
-    tcp_hdr->ack_num = htonl(client_seq + 1);
+    tcp_hdr->ack_num = htonl(con->rcv_nxt);
 
     // header_len = 20
     tcp_hdr->header_len = 5; // 5 * 4 = 20 bytes

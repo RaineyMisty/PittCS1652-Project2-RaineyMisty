@@ -72,6 +72,7 @@ struct tcp_connection {
 
     uint32_t server_seq;
     uint32_t snd_nxt;
+    uint32_t rcv_nxt;
 
 
 };
