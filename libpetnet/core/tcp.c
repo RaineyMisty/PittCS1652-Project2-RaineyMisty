@@ -38,6 +38,9 @@
 #define USE_DEFAULT_SEQ ((uint32_t)(-1))
 #define USE_DEFAULT_ACK ((uint32_t)(-1))
 
+// #define MAX_WAIT_TIME_MS 5000
+// #define POLL_INTERVAL_MS 10
+
 
 /// @dark_magic
 struct pet_ringbuf;
@@ -128,11 +131,13 @@ struct tcp_state {
 };
 
 
+static int send_syn(struct tcp_connection * con, uint32_t init_seq);
 static int send_syn_ack(struct tcp_connection * con, uint32_t recv_seq);
 static int resend_syn_ack(struct tcp_connection * con);
 static int send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t payload_len);
 static int send_fin(struct tcp_connection * con, uint32_t recv_seq);
 static int __send_pkt(struct tcp_connection * con, uint8_t flags, uint32_t seq_num, uint32_t ack_num);
+// static int wait_for_syn_ack(struct tcp_connection * con);
 static struct tcp_connection * get_listen_connection(struct tcp_con_map * map,
                                                       struct ipv4_addr   * local_ip,
                                                       uint16_t             local_port,
@@ -317,11 +322,99 @@ tcp_connect_ipv4(struct socket    * sock,
                  uint16_t           remote_port)
 {
     struct tcp_state      * tcp_state = petnet_state->tcp_state;
+    if (!tcp_state || !tcp_state->con_map) {
+        log_error("tcp_connect_ipv4: tcp_state or connection map is NULL\n");
+        return -1;
+    }
 
-    (void)tcp_state; // delete me
+    struct tcp_connection * con = create_ipv4_tcp_con(
+        tcp_state->con_map,
+        local_addr,
+        remote_addr,
+        local_port,
+        remote_port
+    );
 
-    return -1;
+    if (!con) {
+        log_error("Could not create TCP connection\n");
+        return -1;
+    }
+
+    con->con_state = SYN_SENT;
+
+    // if (add_sock_to_tcp_con(tcp_state->con_map, con, sock) == -1) {
+    //     log_error("Could not add socket to TCP connection\n");
+    //     put_and_unlock_tcp_con(con);
+    //     return -1;
+    // }
+    // Send SYN
+
+    uint32_t init_seq = 1000; // Better to use a random number later
+    int ret = send_syn(con, init_seq);
+    if (ret == -1) {
+        log_error("Failed to send SYN packet\n");
+        put_and_unlock_tcp_con(con);
+        return -1;
+    }
+
+    // // Wait for SYN-ACK
+    // ret = wait_for_syn_ack(con);
+    // if (ret == -1) {
+    //     log_error("Failed to wait for SYN-ACK packet\n");
+    //     put_and_unlock_tcp_con(con);
+    //     return -1;
+    // }
+
+    // // send ACK and finish the connection
+    // ret = send_ack(con, con->server_seq + 1, 0);
+
+    // if (ret == -1) {
+    //     log_error("Failed to send ACK packet\n");
+    //     put_and_unlock_tcp_con(con);
+    //     return -1;
+    // }
+
+    con->con_state = ESTABLISHED;
+    put_and_unlock_tcp_con(con);
+    
+    // if(add_sock_to_tcp_con(tcp_state->con_map, con, sock) == -1) {
+    //     log_error("Could not add socket to TCP connection\n");
+    //     put_and_unlock_tcp_con(con);
+    //     return -1;
+    // }
+
+    return 0;
 }
+
+static int send_syn(struct tcp_connection * con, uint32_t init_seq) {
+    // Send SYN
+    uint8_t flags = TCP_SYN;
+    uint32_t seq_num = init_seq;
+    uint32_t ack_num = 0;
+    int ret = __send_pkt(con, flags, seq_num, ack_num);
+    if (ret == -1) {
+        log_error("Failed to send SYN packet\n");
+        return -1;
+    }
+    con->server_seq = init_seq;
+    con->snd_nxt++;
+    return ret;
+}
+
+// static int wait_for_syn_ack(struct tcp_connection * con) {
+//     // Wait for SYN-ACK
+//     int waited = 0;
+//     while (con->con_state != ESTABLISHED && waited < MAX_WAIT_TIME_MS) {
+//         usleep(POLL_INTERVAL_MS * 1000);
+//         waited += POLL_INTERVAL_MS;
+//     }
+//     if (con->con_state != ESTABLISHED) {
+//         log_error("Failed to receive SYN-ACK packet\n");
+//         return -1;
+//     }
+//     log_debug("Received SYN-ACK packet\n");
+//     return 0;
+// }
 
 
 int
