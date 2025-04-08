@@ -28,6 +28,13 @@
 #include "packet.h"
 #include "socket.h"
 
+#define TCP_SYN (1 << 0)
+#define TCP_ACK (1 << 1)
+#define TCP_PSH (1 << 2)
+#define TCP_RST (1 << 3)
+#define TCP_URG (1 << 4)
+#define TCP_FIN (1 << 5)
+
 
 /// @dark_magic
 struct pet_ringbuf;
@@ -121,6 +128,7 @@ struct tcp_state {
 static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt);
 static int __send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t payload_len);
 static int __send_fin(struct tcp_connection * con, uint32_t recv_seq);
+static int __send_pkt(struct tcp_connection * con, uint8_t flags, uint32_t seq_num, uint32_t ack_num);
 static struct tcp_connection * get_listen_connection(struct tcp_con_map * map,
                                                       struct ipv4_addr   * local_ip,
                                                       uint16_t             local_port,
@@ -683,6 +691,68 @@ __calculate_tcp_checksum(struct ipv4_addr * src_ip,
         checksum = calculate_checksum_finalize(checksum, NULL, 0);
     }
     return checksum;
+}
+
+static int __send_pkt(struct tcp_connection * con, uint8_t flags, uint32_t seq_num, uint32_t ack_num) {
+    // Create a empty packet
+    struct packet * pkt = create_empty_packet();
+    if (!pkt) {
+        log_error("Could not create packet\n");
+        return -1;
+    }
+
+    pkt->layer_3_type = IPV4_PKT;
+
+    // Create TCP header
+    struct tcp_raw_hdr * tcp_hdr = __make_tcp_hdr(pkt, 0);
+    if (!tcp_hdr) {
+        log_error("Could not create TCP header for sending ACK\n");
+        free_packet(pkt);
+        return -1;
+    }
+
+    // src_port = my_port
+    tcp_hdr->src_port = htons(con->ipv4_tuple.local_port);
+    // dst_port = their_port
+    tcp_hdr->dst_port = htons(con->ipv4_tuple.remote_port);
+    // seq_num = current_seq
+    uint32_t seq_to_use = (seq_num == -1) ? con->snd_nxt : seq_num;
+    tcp_hdr->seq_num = htonl(seq_to_use);
+    // ack_num = their_seq + len
+    uint32_t ack_to_use = (ack_num == -1) ? con->rcv_nxt : ack_num;
+    tcp_hdr->ack_num = htonl(ack_to_use);
+
+    // header_len = tcp_raw_hdr_len / 4
+    tcp_hdr->header_len = (sizeof(struct tcp_raw_hdr) / 4);
+
+    // flags
+    tcp_hdr->flags.SYN = (flags & TCP_SYN) ? 1 : 0;
+    tcp_hdr->flags.ACK = (flags & TCP_ACK) ? 1 : 0;
+    tcp_hdr->flags.PSH = (flags & TCP_PSH) ? 1 : 0;
+    tcp_hdr->flags.RST = (flags & TCP_RST) ? 1 : 0;
+    tcp_hdr->flags.URG = (flags & TCP_URG) ? 1 : 0;
+    tcp_hdr->flags.FIN = (flags & TCP_FIN) ? 1 : 0;
+
+    // recv_win
+    tcp_hdr->recv_win = htons(64240); // 0xF8B0 64240 bytes left
+
+    // checksum
+    tcp_hdr->checksum = __calculate_tcp_checksum(
+        con->ipv4_tuple.local_ip,
+        con->ipv4_tuple.remote_ip,
+        pkt
+    );
+
+    int ret = ipv4_pkt_tx(pkt, con->ipv4_tuple.remote_ip);
+    if (ret == -1) {
+        log_error("Failed to send packet\n");
+        free_packet(pkt);
+        return -1;
+    }
+    log_debug("Sent packet to %s:%d\n",
+                ipv4_addr_to_str(con->ipv4_tuple.remote_ip), con->ipv4_tuple.remote_port);
+
+    return ret;
 }
 
 static int __send_fin(struct tcp_connection  * con, uint32_t recv_seq) {
