@@ -127,7 +127,7 @@ struct tcp_state {
 
 static int __send_syn_ack(struct tcp_connection * con, struct packet * recv_pkt);
 static int __send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t payload_len);
-static int __send_fin(struct tcp_connection * con, uint32_t recv_seq);
+static int send_fin(struct tcp_connection * con, uint32_t recv_seq);
 static int __send_pkt(struct tcp_connection * con, uint8_t flags, uint32_t seq_num, uint32_t ack_num);
 static struct tcp_connection * get_listen_connection(struct tcp_con_map * map,
                                                       struct ipv4_addr   * local_ip,
@@ -503,7 +503,7 @@ tcp_pkt_rx(struct packet * pkt)
                         ipv4_addr_to_str(src_ip), src_port);
             
             // Send FIN
-            if (__send_fin(con, ntohl(tcp_hdr->seq_num)) == -1) {
+            if (send_fin(con, ntohl(tcp_hdr->seq_num)) == -1) {
                 log_error("Failed to send FIN packet\n");
                 put_and_unlock_tcp_con(con);
                 goto cleanup;
@@ -755,59 +755,17 @@ static int __send_pkt(struct tcp_connection * con, uint8_t flags, uint32_t seq_n
     return ret;
 }
 
-static int __send_fin(struct tcp_connection  * con, uint32_t recv_seq) {
+static int send_fin(struct tcp_connection  * con, uint32_t recv_seq) {
     // Send FIN
-    // Create a empty packet
-    struct packet * fin_pkt = create_empty_packet();
-    if (!fin_pkt) {
-        log_error("Could not create packet\n");
-        return -1;
-    }
-    fin_pkt->layer_3_type = IPV4_PKT;
-    // Create TCP header
-    struct tcp_raw_hdr * tcp_hdr = __make_tcp_hdr(fin_pkt, 0);
-    if (!tcp_hdr) {
-        log_error("Could not create TCP header for sending FIN-ACK\n");
-        free_packet(fin_pkt);
-        return -1;
-    }
-    // src_port = my_port
-    tcp_hdr->src_port = htons(con->ipv4_tuple.local_port);
-    // dst_port = their_port
-    tcp_hdr->dst_port = htons(con->ipv4_tuple.remote_port);
-    // seq_num = current_seq
-    tcp_hdr->seq_num = htonl(con->snd_nxt);
-    con->snd_nxt++;
-    // ack_num = their_seq + 1
-    tcp_hdr->ack_num = 0;
-
-    // header_len = tcp_raw_hdr_len / 4
-    tcp_hdr->header_len = (sizeof(struct tcp_raw_hdr) / 4);
-    // flags
-    tcp_hdr->flags.SYN = 0;
-    tcp_hdr->flags.ACK = 0;
-    tcp_hdr->flags.PSH = 0;
-    tcp_hdr->flags.RST = 0;
-    tcp_hdr->flags.URG = 0;
-    tcp_hdr->flags.FIN = 1;
-
-    // recv_win
-    tcp_hdr->recv_win = htons(64240); // 0xF8B0 64240 bytes left
-    // checksum
-    tcp_hdr->checksum = __calculate_tcp_checksum(
-        con->ipv4_tuple.local_ip,
-        con->ipv4_tuple.remote_ip,
-        fin_pkt
-    );
-    int ret = ipv4_pkt_tx(fin_pkt, con->ipv4_tuple.remote_ip);
+    uint8_t flags = TCP_FIN;
+    uint32_t seq_num = con->snd_nxt;
+    uint32_t ack_num = 0;
+    int ret = __send_pkt(con, flags, seq_num, ack_num);
     if (ret == -1) {
-        log_error("Failed to send FIN-ACK packet\n");
-        free_packet(fin_pkt);
+        log_error("Failed to send FIN packet\n");
         return -1;
     }
-    log_debug("Sent FIN-ACK packet to %s:%d\n",
-                ipv4_addr_to_str(con->ipv4_tuple.remote_ip), con->ipv4_tuple.remote_port);
-    
+    con->snd_nxt++;
     return ret;
 }
 
