@@ -43,7 +43,12 @@
 
 
 /// @dark_magic
-struct pet_ringbuf;
+struct pet_ringbuf {
+    uint8_t * buf;
+    uint8_t * head;
+    uint8_t * tail;
+    size_t    size;
+};
 
 
 struct socket {
@@ -421,10 +426,56 @@ int
 tcp_send(struct socket * sock)
 {
     struct tcp_state      * tcp_state = petnet_state->tcp_state;
+    struct tcp_connection * con       = get_and_lock_tcp_con_from_sock(
+        tcp_state->con_map,
+        sock
+    );
+    if (!con || con->con_state != ESTABLISHED) {
+        if (con) {
+            log_error("TCP connection is not in ESTABLISHED state\n");
+            put_and_unlock_tcp_con(con);
+        } else {
+            log_error("Could not find TCP connection for socket %p\n", sock);
+        }
+        return -1;
+    }
 
-    (void)tcp_state; // delete me
+    // Check if there is data to send
+    if (sock->send_buf == NULL) {
+        log_error("Send buffer is NULL\n");
+        put_and_unlock_tcp_con(con);
+        return -1;
+    }
+    if (sock->send_buf->head == sock->send_buf->tail) {
+        log_error("Send buffer is empty\n");
+        put_and_unlock_tcp_con(con);
+        return -1;
+    }
+    // Get the data to send
+    // uint8_t * data = sock->send_buf->head;
+    size_t len = sock->send_buf->tail - sock->send_buf->head;
+    if (len > sock->send_buf->size) {
+        log_error("Send buffer overflow\n");
+        put_and_unlock_tcp_con(con);
+        return -1;
+    }
+    // Send the data
+    int ret = __send_pkt(con, TCP_PSH | TCP_ACK, con->snd_nxt, con->rcv_nxt);
+    if (ret == -1) {
+        log_error("Failed to send data packet\n");
+        put_and_unlock_tcp_con(con);
+        return -1;
+    }
+    con->snd_nxt += len;
+    // Update the send buffer
+    sock->send_buf->head += len;
+    if (sock->send_buf->head == sock->send_buf->tail) {
+        sock->send_buf->head = sock->send_buf->tail = 0;
+    }
+    
+    put_and_unlock_tcp_con(con);
 
-    return -1;
+    return 0;
 }
 
 
@@ -434,8 +485,27 @@ int
 tcp_close(struct socket * sock)
 {
     struct tcp_state      * tcp_state = petnet_state->tcp_state;
-  
-    (void)tcp_state; // delete me
+    struct tcp_connection * con       = get_and_lock_tcp_con_from_sock(
+        tcp_state->con_map,
+        sock
+    );
+
+    if (!con) {
+        log_error("Could not find TCP connection for socket %p\n", sock);
+        return -1;
+    }
+
+    con->con_state = FIN_WAIT1;
+    int ret = send_fin(con, con->rcv_nxt);
+    if (ret == -1) {
+        log_error("Failed to send FIN packet\n");
+        put_and_unlock_tcp_con(con);
+        return -1;
+    }
+
+    con->con_state = CLOSED;
+    remove_tcp_con(tcp_state->con_map, con);
+    put_and_unlock_tcp_con(con);
 
     return 0;
 }
