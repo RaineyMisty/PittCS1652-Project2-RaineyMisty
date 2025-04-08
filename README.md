@@ -44,7 +44,7 @@ This project is a minimal user-level TCP implementation as part of a networking 
   - Server responded with an ACK, then sent its own FIN
   - Peer replied with the final ACK  
   - Server transitioned to `CLOSED` state upon receiving the final ACK
-  - Repeated FINs from peer are gracefully ignored (with log message indicating "connection not found" — which is expected and correct)
+  - Repeated FINs from peer are gracefully ignored
 
 #### Project Structure
 
@@ -98,12 +98,17 @@ sudo tcpdump -i petnet_bridge -n -X port 3000
 ### Sample Logs
 
 ```
-Received SYN from 192.168.201.1:35478
-Sent SYN-ACK to 192.168.201.1:35478
-Received valid ACK from 192.168.201.1:35478 → Connection ESTABLISHED
-Received 5 bytes: Hello
-Sent Data Received ACK to 192.168.201.1:35478
-Received FIN from 192.168.201.1:35478 → Sent ACK + FIN
+Received SYN from 192.168.201.1:52552
+Sent SYN-ACK to 192.168.201.1:52552
+Received valid ACK from 192.168.201.1:52552 → Connection ESTABLISHED
+
+Received 5 bytes from socket
+The data is: Hello
+Sent Data Received ACK to 192.168.201.1:52552
+
+Received FIN from 192.168.201.1:52552
+Sent ACK in receiving FIN to 192.168.201.1:52552
+Sent FIN to 192.168.201.1:52552
 Received ACK in LAST_ACK → Connection CLOSED
 ```
 
@@ -113,7 +118,7 @@ Received ACK in LAST_ACK → Connection CLOSED
 
 ## TODO / Improvements
 
-- `__send_ack()`, `__send_syn_ack()` and `___send_fin()`, these three functions can be abstracted into one function to make the code more industrialized.
+- ✅`__send_ack()`, `__send_syn_ack()` and `___send_fin()`, these three functions can be abstracted into one function to make the code more industrialized.
 
 ## Error fix
 
