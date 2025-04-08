@@ -128,7 +128,7 @@ struct tcp_state {
 };
 
 
-static int send_syn_ack(struct tcp_connection * con);
+static int send_syn_ack(struct tcp_connection * con, uint32_t recv_seq);
 static int resend_syn_ack(struct tcp_connection * con);
 static int send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t payload_len);
 static int send_fin(struct tcp_connection * con, uint32_t recv_seq);
@@ -455,7 +455,7 @@ tcp_pkt_rx(struct packet * pkt)
         // new_con->rcv_nxt = ntohl(tcp_hdr->seq_num) + 1;
         // here is new_con but I use con and try to debug many times and fail
         // crycry
-        if (send_syn_ack(new_con) == -1) {
+        if (send_syn_ack(new_con, ntohl(tcp_hdr->seq_num)) == -1) {
             log_error("Failed to send SYN-ACK packet\n");
             goto cleanup;
         }
@@ -739,12 +739,12 @@ static int __send_pkt(struct tcp_connection * con, uint8_t flags, uint32_t seq_n
     tcp_hdr->recv_win = htons(64240); // 0xF8B0 64240 bytes left
 
     // checksum
-    if (flags == (TCP_SYN | TCP_ACK)) {
-        // When sending SYN_ACK data, the payload
-        // and payload_len are set to 0
-        pkt->payload_len = 0;
-        pkt->payload     = NULL;
-    }
+    // if (flags == (TCP_SYN | TCP_ACK)) {
+    //     // When sending SYN_ACK data, the payload
+    //     // and payload_len are set to 0
+    //     pkt->payload_len = 0;
+    //     pkt->payload     = NULL;
+    // }
     tcp_hdr->checksum = __calculate_tcp_checksum(
         con->ipv4_tuple.local_ip,
         con->ipv4_tuple.remote_ip,
@@ -798,7 +798,7 @@ static int send_ack(struct tcp_connection * con, uint32_t recv_seq, uint32_t pay
     return ret;
 }                         
 
-static int send_syn_ack(struct tcp_connection * con) {
+static int send_syn_ack(struct tcp_connection * con, uint32_t recv_seq) {
     // dst_port = their_port
     // tcp_hdr->dst_port = ((struct tcp_raw_hdr *)recv_pkt->layer_4_hdr)->src_port;
     // in the get_listen_connection, we have already set the local port
@@ -807,7 +807,7 @@ static int send_syn_ack(struct tcp_connection * con) {
 
     // seq_num = my_first_seq
     uint32_t server_seq = 1000; // Better to use a random number later
-    uint32_t ack_num = con->rcv_nxt + 1;
+    uint32_t ack_num = recv_seq + 1;
     uint8_t flags = TCP_SYN | TCP_ACK;
     int ret = __send_pkt(con, flags, server_seq, ack_num);
     if (ret == -1) {
