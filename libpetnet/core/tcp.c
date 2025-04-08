@@ -440,7 +440,9 @@ tcp_pkt_rx(struct packet * pkt)
         }
 
         // Send SYN-ACK
-        con->rcv_nxt = ntohl(tcp_hdr->seq_num) + 1;
+        new_con->rcv_nxt = ntohl(tcp_hdr->seq_num) + 1;
+        // here is new_con but I use con and try to debug many times and fail
+        // crycry
         if (__send_syn_ack(new_con, pkt) == -1) {
             log_error("Failed to send SYN-ACK packet\n");
             goto cleanup;
