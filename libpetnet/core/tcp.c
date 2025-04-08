@@ -35,6 +35,9 @@
 #define TCP_URG (1 << 4)
 #define TCP_FIN (1 << 5)
 
+#define USE_DEFAULT_SEQ ((uint32_t)(-1))
+#define USE_DEFAULT_ACK ((uint32_t)(-1))
+
 
 /// @dark_magic
 struct pet_ringbuf;
@@ -716,10 +719,10 @@ static int __send_pkt(struct tcp_connection * con, uint8_t flags, uint32_t seq_n
     // dst_port = their_port
     tcp_hdr->dst_port = htons(con->ipv4_tuple.remote_port);
     // seq_num = current_seq
-    uint32_t seq_to_use = (seq_num == -1) ? con->snd_nxt : seq_num;
+    uint32_t seq_to_use = (seq_num == USE_DEFAULT_SEQ) ? con->snd_nxt : seq_num;
     tcp_hdr->seq_num = htonl(seq_to_use);
     // ack_num = their_seq + len
-    uint32_t ack_to_use = (ack_num == -1) ? con->rcv_nxt : ack_num;
+    uint32_t ack_to_use = (ack_num == USE_DEFAULT_ACK) ? con->rcv_nxt : ack_num;
     tcp_hdr->ack_num = htonl(ack_to_use);
 
     // header_len = tcp_raw_hdr_len / 4
